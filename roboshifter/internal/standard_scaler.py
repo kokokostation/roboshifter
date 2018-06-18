@@ -7,8 +7,14 @@ class Scaler:
     def __init__(self):
         self.data = None
 
+    def fit(self, X):
+        raise NotImplementedError()
+
     def transform(self, X):
         return (X - self.data['mu']) / self.data['s']
+
+    def fit_transform(self, X):
+        return self.fit(X).transform(X)
 
 
 class RobustScaler(Scaler):
@@ -24,3 +30,5 @@ class StandardScaler(Scaler):
             'mu': X.mean(axis=0, skipna=True),
             's': X.std(axis=0, skipna=True)
         }
+
+        return self

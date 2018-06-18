@@ -7,6 +7,7 @@ from meta_manager import MetaManager
 from classifier import Roboshifter
 from root2py import Root2Py
 from train_data import TrainDataMaker
+from utils import Maybe
 
 COLLECTOR_PATHS = {
     'MONET_HISTOS': 'monet_histos.pickle',
@@ -94,25 +95,26 @@ class Collector(DataManager):
 
         return result
 
-    def get_run_helper(self, reference, run_handle):
-        return self.get_root2py(reference, run_handle)
-
     def get_run(self, run):
-        return self.get_run_helper(False, run)
+        return self.make_result(self.get_root2py(False, run), 'No run data available')
 
     def get_reference_by_hash(self, hash):
-        return self.get_run_helper(True, hash)
+        return self.get_root2py(True, hash)
 
     def get_data_ref(self):
         return self.read_pickle('DATA_REF')
 
+    def make_result(self, result, error_on_fail):
+        return Maybe(error_message=[error_on_fail]) if result is None else result
+
     def get_reference(self, run):
+        result = None
         data_ref = self.get_data_ref()
 
         if run in data_ref:
-            return self.get_reference_by_hash(data_ref[run])
-        else:
-            return None
+            result = self.get_reference_by_hash(data_ref[run])
+
+        return self.make_result(result, 'No reference data available')
 
     def get_linear_data(self):
         return self.read_pickle('TREND_LINEAR_DATA')

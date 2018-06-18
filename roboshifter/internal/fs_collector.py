@@ -32,8 +32,9 @@ class FsCollector(ExternalCollector, DataManager):
         return self.read_file('RUN_FILES')
 
     def read_root(self, fname):
-        return ROOT.TFile(os.path.join(self.paths['MONET_DATA_PATH'],
-                                       '{}.root'.format(fname)))
+        path = os.path.join(self.paths['MONET_DATA_PATH'], '{}.root'.format(fname))
+
+        return ROOT.TFile(path) if os.path.exists(path) else None
 
     def get_run_tfile(self, run_number):
         return self.read_root(run_number)

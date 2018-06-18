@@ -14,7 +14,7 @@ class TrainDataMaker:
                               if col[0] == 'my' and col[-2:] == ('stats', prefix)]
                      for prefix in ['runs', 'refs']}
 
-        means = features['features'][stat_cols['runs']].mean(axis=0).as_matrix()
+        means = features['features'][stat_cols['runs']].mean(axis=0).values
         means /= means.sum()
 
         for prefix in ['runs', 'refs']:
@@ -51,10 +51,11 @@ class TrainDataMaker:
         features = pd.concat([features, FeatureContainer.concat(feature_containers)],
                              keys=['features', 'info'], axis=1)
 
-        features[('info', 'missing_trend_linear')] = linear_data.loc[features.index].isnull()\
+        features_linear_data = features['features'][linear_data.columns]
+        features[('info', 'missing_trend_linear')] = features_linear_data.isnull()\
             .apply(lambda row: row[row].index.tolist(), axis=1)
-        features.loc[linear_data.isnull().any(axis=1), ('info', 'flag')] = Flag.TAIL
-        features.loc[linear_data[('linear', 'run_length')].isnull(), ('info', 'flag')] = Flag.BAD
+        features.loc[features_linear_data.isnull().any(axis=1), ('info', 'flag')] = Flag.TAIL
+        features.loc[features_linear_data[('linear', 'run_length')].isnull(), ('info', 'flag')] = Flag.BAD
 
         if TrainDataMaker.my_features_present(features):
             is_reference = True
@@ -70,6 +71,9 @@ class TrainDataMaker:
         curr_features = self.collector.get_train_data()
         if curr_features is None:
             curr_features = pd.DataFrame()
+        else:
+            curr_features = curr_features.loc[:, features.columns]
+
         curr_features = curr_features.append(features)
         curr_features = curr_features.loc[~curr_features.index.duplicated(keep='last')].sort_index()
 
@@ -101,11 +105,13 @@ class TrainDataMaker:
         switch_col = ('features', ('linear', 'switch'))
         switches = curr_features[curr_features[('info', 'flag')] == Flag.TRAIN]\
             .groupby([switch_col])
-        for switch, index in switches.groups.items():
-            if len(index) < Roboshifter.MIN_SWITCH_LENGTH:
+        for switch, index in [(sw, switches.groups.get(sw))
+                              for sw in curr_features[switch_col].unique()]:
+            if index is None or len(index) < Roboshifter.MIN_SWITCH_LENGTH:
                 error_msg = \
                     'The switch this run belongs to is too short ({} ' \
-                    'samples) so histogram predictions are unreliable'.format(len(index))
+                    'samples) so histogram predictions are unreliable'.format(
+                        0 if index is None else len(index))
 
                 true_index = curr_features[switch_col] == switch
                 TrainDataMaker.write_features_error(curr_features, true_index,
@@ -122,15 +128,20 @@ class TrainDataMaker:
 
     def make_X_y(self, df):
         df = df[df[('info', 'flag')] <= Flag.TAIL]
-        X = df.drop([('features', 'flag')] +
-                    [col for col in df if col[0] == 'info' and col[1] != 'flag'], axis=1)
+
+        features = df['features'].drop('flag', axis=1)
+        info = df['info'][['flag']]
+        X = pd.concat([features, info], keys=['features', 'info'], axis=1)
+
         y = df[('features', 'flag')]
 
         return X, y
 
     def get_roboshifter_data(self, run_numbers):
-        run_numbers = sorted(run_numbers)
         df = self.collector.get_train_data()
+
+        unknown_runs = set(run_numbers) - set(df.index)
+        run_numbers = sorted(set(df.index) & set(run_numbers))
 
         train_df = df.loc[:run_numbers[0] - 1]
 
@@ -143,4 +154,4 @@ class TrainDataMaker:
         X_test, _ = self.make_X_y(test_df)
         test_info = test_df['info']
 
-        return X_train, X_test, y_train, test_info
+        return X_train, X_test, y_train, test_info, unknown_runs

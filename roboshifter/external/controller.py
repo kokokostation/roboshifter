@@ -1,4 +1,4 @@
-import json
+import simplejson
 from multiprocessing import cpu_count
 
 from roboshifter.internal.collector import Collector
@@ -6,7 +6,6 @@ from roboshifter.internal.constant_filter import ConstantFilter
 from roboshifter.internal.classifier import Roboshifter
 from roboshifter.internal.roboshifter_utils import RoboshifterError
 from roboshifter.internal.report_maker import ReportMaker
-from roboshifter.internal.features import get_train_features
 from roboshifter.internal.alarms import AlarmFilter
 
 
@@ -36,11 +35,11 @@ class Controller:
     def __predict_runs_helper(self, run_numbers):
         rm = ReportMaker()
 
-        X_train, X_test, y_train, test_info = self.__collector.get_roboshifter_data(run_numbers)
+        X_train, X_test, y_train, test_info, unknown_runs = \
+            self.__collector.get_roboshifter_data(run_numbers)
 
         try:
-            rs = Roboshifter(interactions=self.__collector.get_interactions(), verbose=False,
-                             njobs=self.__njobs)
+            rs = Roboshifter(self.__collector, verbose=False, njobs=self.__njobs)
             rs_prediction = rs.fit(X_train, y_train).predict(X_test)
         except RoboshifterError as re:
             return rm.make_fail_report(re)
@@ -51,7 +50,8 @@ class Controller:
         af = AlarmFilter()
         af_prediction = af.fit(X_train).predict(X_test)
 
-        return rm.make_report(rs_prediction, cf_prediction, af_prediction, test_info, run_numbers)
+        return rm.make_report(rs_prediction, cf_prediction, af_prediction,
+                              test_info, unknown_runs, run_numbers)
 
     def update_meta(self):
         """
@@ -94,4 +94,4 @@ class Controller:
         Json with the reports.
         """
 
-        return json.dumps(self.__predict_runs_helper(run_numbers), indent=4)
+        return simplejson.dumps(self.__predict_runs_helper(run_numbers), indent=4, ignore_nan=True)

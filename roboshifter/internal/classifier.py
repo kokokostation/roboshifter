@@ -3,12 +3,11 @@ import numpy as np
 from sklearn.linear_model import LogisticRegression, HuberRegressor
 from collections import defaultdict
 from scipy.stats import pearsonr
-from functools import partial
+from functools import partial, wraps
 from multiprocessing import Manager, Pool
-from functools import wraps
-from standard_scaler import RobustScaler, StandardScaler
 
-from roboshifter_utils import mahalanobis, reindex, normalize_df, mcd, huber, \
+from standard_scaler import RobustScaler, StandardScaler
+from roboshifter_utils import mahalanobis, reindex, mcd, huber, \
     get_linear_features, get_histo_features, RoboshifterError
 from report_maker import ReportMaker
 from utils import NullStripper, TailHandler
@@ -104,8 +103,8 @@ def handle_interactions_helper(pack):
 
 def predict(f):
     @wraps(f)
-    def wrapper(self, X, y=None):
-        result = f(self, X, y, y is not None)
+    def wrapper(self, X, y=None, *args, **kwargs):
+        result = f(self, X, y, y is not None, *args, **kwargs)
 
         return result
 
@@ -213,6 +212,7 @@ class Roboshifter:
 
     MIN_SWITCH_LENGTH = 20
     MAX_REFERENCE_STATS_RATIO = 5
+    MIN_FIT_RUNS = 300
 
     @staticmethod
     def get_pairs(l):
@@ -243,22 +243,17 @@ class Roboshifter:
 
         return interactions
 
-    def __init__(self, interactions=None, mean_window=5, std_window=10, pollution_rate=0.1,
+    def __init__(self, collector, mean_window=5, std_window=10, pollution_rate=0.1,
                  feature_filter_threshold=0.9, feature_threshold_percentile=0.95, njobs=4,
-                 roc_auc_threshold=0.6, verbose=False):
-        if interactions is None:
-            from collector import Collector
-
-            interactions = Collector().get_interactions()
-
-        self.interactions = interactions
+                 verbose=False):
+        self.collector = collector
+        self.interactions = self.collector.get_interactions()
         self.mean_window = mean_window
         self.std_window = std_window
         self.pollution_rate = pollution_rate
         self.feature_filter_threshold = feature_filter_threshold
         self.feature_threshold_percentile = feature_threshold_percentile
         self.njobs = njobs
-        self.roc_auc_threshold = roc_auc_threshold
         self.verbose = verbose
 
         self.renew()
@@ -273,7 +268,8 @@ class Roboshifter:
 
         self.info = {}
 
-        self.full_fit_X = None
+        self.fit_tail_X = None
+        self.fit_tail_y = None
         self.fit_X = None
         self.fit_y = None
 
@@ -285,7 +281,7 @@ class Roboshifter:
 
         return reindex(df.index, result)
 
-    def prepare_features(self, data, exclude=None, local_std=True, local_mean=True):
+    def prepare_features(self, data, exclude=None, local_std=False, local_mean=True):
         if self.verbose:
             print 'preparing features'
 
@@ -337,11 +333,11 @@ class Roboshifter:
 
         return df.iloc[index[0]].proba
 
-    def predict_filter(self, X, preparer, prefix, y=None, fts_prefix=None):
+    @predict
+    def predict_filter(self, X, y, fit, preparer, prefix, fts_prefix=None):
         if self.verbose:
             print 'predicting {} filter'.format(prefix)
 
-        fit = y is not None
         if fts_prefix is None:
             fts_prefix = prefix
 
@@ -358,6 +354,7 @@ class Roboshifter:
         fts = self.classifier_data['filter_thresholds']
         if fit and fts_prefix not in fts:
             fts[fts_prefix] = self.get_threshold(ndf.proba, y, self.pollution_rate)
+
         ndf['flag'] = (ndf.proba > fts[fts_prefix]).astype(np.int64)
 
         ndf = ns.make_data(ndf)
@@ -378,7 +375,7 @@ class Roboshifter:
         self.classifier_data['filters'][name] = model
         self.classifier_data['filters'][name].fit(X, y)
 
-        self.predict_filter(self.fit_X, preparer, name, self.fit_y)
+        self.predict_filter(self.fit_X, self.fit_y, preparer, name)
 
         if self.verbose:
             print 'finished fitting {} filter'.format(name)
@@ -386,18 +383,18 @@ class Roboshifter:
     def prepare_stat_filter(self, X, y=None):
         ndf = X[[('linear', 'run_length'), ('integral', 'runssum')]]
 
-        return normalize_df(ndf)
+        return StandardScaler().fit_transform(ndf)
 
     def fit_stat_filter(self):
         self.fit_filter(self.prepare_stat_filter,
                         LogisticRegression(class_weight='balanced'),
                         'stat')
 
-        self.predict_filter(self.fit_tail_X, self.prepare_stat_filter, 'tail_stat',
-                            self.fit_tail_y, 'stat')
+        self.predict_filter(self.fit_tail_X, self.fit_tail_y, self.prepare_stat_filter,
+                            'tail_stat', 'stat')
 
     def predict_stat_filter(self, X, y=None):
-        self.predict_filter(X, self.prepare_stat_filter, 'stat', y)
+        self.predict_filter(X, y, self.prepare_stat_filter, 'stat')
 
     def get_fit_stat_flag(self, tail):
         key, y = ('tail_stat_flag', self.fit_tail_y) if tail else ('stat_flag', self.fit_y)
@@ -458,7 +455,7 @@ class Roboshifter:
         self.classifier_data['thresholds']['linear'] = model
 
     def predict_linear_filter(self, X, y=None):
-        self.predict_filter(X, self.prepare_selected_linear_filter, 'linear', y)
+        self.predict_filter(X, y, self.prepare_selected_linear_filter, 'linear')
 
     @predict
     def predict_linear_thresholds(self, X, y, fit):
@@ -603,7 +600,7 @@ class Roboshifter:
     def prepare_huber(df, stat_flag):
         fit_df = df.loc[stat_flag == 0]
 
-        X, y = fit_df.as_matrix().T
+        X, y = fit_df.values.T
         return X.reshape((-1, 1)), y
 
     @staticmethod
@@ -690,8 +687,10 @@ class Roboshifter:
 
         scores = self.predict_ee_scores(features, True)
 
+        normal_index = self.fit_y == 0
+
         model = StandardScaler()
-        model.fit(scores[self.fit_y == 0])
+        model.fit(scores[normal_index])
         self.classifier_data['scalers']['feature'] = model
 
         self.predict_ee(self.fit_X, self.fit_y)
@@ -740,6 +739,10 @@ class Roboshifter:
         if self.verbose:
             print 'finished predicting figures'
 
+    def fail_init_fit(self):
+        raise RoboshifterError('At least {} valid runs needed for train'.format(
+            Roboshifter.MIN_FIT_RUNS))
+
     def init_fit(self, X, y):
         self.renew()
 
@@ -747,6 +750,10 @@ class Roboshifter:
         self.fit_tail_y = y.copy()
 
         fit_index, train_X = get_train_features(X)
+
+        if train_X.empty:
+            self.fail_init_fit()
+
         last_switch = train_X[('linear', 'switch')] == train_X[('linear', 'switch')].iloc[-1]
         if last_switch.sum() < Roboshifter.MIN_SWITCH_LENGTH:
             fit_index &= ~last_switch
@@ -754,8 +761,8 @@ class Roboshifter:
         self.fit_X = X.loc[fit_index, 'features'].copy()
         self.fit_y = y.loc[fit_index].copy()
 
-        if self.fit_X.empty:
-            raise RoboshifterError('No valid data to fit')
+        if len(self.fit_X) < Roboshifter.MIN_FIT_RUNS:
+            self.fail_init_fit()
 
         self.info[True] = {}
 

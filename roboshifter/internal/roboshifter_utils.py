@@ -1,6 +1,4 @@
 import numpy as np
-import pandas as pd
-from sklearn.preprocessing import StandardScaler
 
 from rpy2.robjects.packages import importr
 from rpy2.robjects import pandas2ri
@@ -27,10 +25,6 @@ def reindex(index, series):
     return series.reindex(index).interpolate(method='bfill').interpolate(method='ffill')
 
 
-def normalize_df(df):
-    return pd.DataFrame(StandardScaler().fit_transform(df), index=df.index, columns=df.columns)
-
-
 def mcd(ellipse, alpha=0.75):
     result = robustbase.covMcd(ellipse, alpha=alpha)
     result = {key: np.array(result.rx(key)[0]) for key in ['center', 'cov']}
@@ -39,9 +33,15 @@ def mcd(ellipse, alpha=0.75):
 
 
 def huber(gaussian):
-    result = mass.huber(gaussian)
+    try:
+        result = mass.huber(gaussian)
 
-    return {key: result.rx(key)[0][0] for key in ['mu', 's']}
+        return {key: result.rx(key)[0][0] for key in ['mu', 's']}
+    except:
+        return {
+            'mu': next(iter(gaussian)),
+            's': 0.
+        }
 
 
 def get_linear_features(df, features):

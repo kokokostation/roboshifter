@@ -3,7 +3,6 @@ import numpy as np
 from tqdm import tqdm
 from sklearn.metrics import precision_score, accuracy_score, recall_score
 
-
 from roboshifter.internal.collector import Collector
 from roboshifter.internal.features import Flag
 from roboshifter.internal.classifier import Roboshifter
@@ -25,6 +24,12 @@ def get_pure_train_data():
     return traindf
 
 
+def cut_tails(rs, index):
+    rs.fit_tail_X = rs.fit_tail_X.iloc[:index]
+    rs.fit_tail_y = rs.fit_tail_y.iloc[:index]
+    rs.info[True]['tail_stat_flag'] = rs.info[True]['tail_stat_flag'].iloc[:index]
+
+
 def make_X_y(df):
     flag = ('features', 'flag')
     return df.drop([flag], axis=1), df[flag]
@@ -39,7 +44,8 @@ def roboshifter_first_fit(model):
 
 
 def evaluate_roboshifter(begin, df, predict_modifier=None, njobs=4, verbose=False):
-    rs = Roboshifter(njobs=njobs, verbose=verbose)
+    collector = Collector()
+    rs = Roboshifter(collector, njobs=njobs, verbose=verbose)
     X, y = make_X_y(df)
     switch = df[('features', ('linear', 'switch'))]
 

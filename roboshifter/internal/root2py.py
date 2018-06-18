@@ -82,8 +82,9 @@ class Root2Py:
 
         ref_hashes = set()
         for run_number in run_numbers:
-            ref_hash = data_ref[run_number]
-            if ref_hash not in ref_hashes:
+            ref_hash = data_ref.get(run_number)
+
+            if ref_hash is not None and ref_hash not in ref_hashes:
                 args.append((self,
                              histo_keys,
                              run_number,

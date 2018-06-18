@@ -76,7 +76,6 @@ def make_distribution(histo):
     return rv_discrete(values=(np.arange(distr.shape[0]), distr)), bars
 
 
-
 def assemble_name(prefix, name):
     pn = [prefix, name]
 
@@ -88,11 +87,7 @@ def assemble_name(prefix, name):
 
 
 def rename_features(features, prefix):
-    features = features.copy()
-
-    features.index = features.index.map(partial(assemble_name, prefix))
-
-    return features
+    return pd.Series(features.values, index=[assemble_name(prefix, name) for name in features.index])
 
 
 def statistical_distance(strong, weak):
@@ -131,6 +126,9 @@ def max_error_ratio(runh, refh):
     diffs = runh['vals'] - refh['vals']
     errors = np.sqrt(runh['errs'] ** 2 + refh['errs'] ** 2)
     index = errors != 0
+
+    if index.sum() == 0:
+        return None
 
     return np.max(np.abs(diffs[index] / errors[index]))
 
@@ -218,7 +216,7 @@ def weird_tprofile_features(runh, refh):
 
     s = mask.sum()
 
-    if s == 0:
+    if s < 3:
         return Maybe(error_message=['Too many zeros in graph to process features'])
     else:
         for d in [runh, refh]:
